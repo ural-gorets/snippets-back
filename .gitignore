@@ -1,0 +1,12 @@
+*.pyc
+/.idea/
+/Include/
+/Lib/
+/bin/
+/include/
+/lib/
+/share/
+lib64
+Scripts/*
+pyvenv.cfg
+pip-selfcheck.json
