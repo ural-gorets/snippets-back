@@ -123,7 +123,8 @@ class Upload(Resource):
     """
     Handle uploaded snippet, add it to the database.
     """
-    allowed_langs = ['Python', 'Javascript', 'Perl', 'Ruby', 'Shell', 'HTML', 'CSS', 'SQL', 'PHP']
+    allowed_langs = ['Python', 'Javascript', 'Perl', 'Ruby', 'Shell',
+                     'HTML', 'CSS', 'SQL', 'PHP', 'Другой']
 
     def post(self):
         # Extract FormData keys.
@@ -135,12 +136,13 @@ class Upload(Resource):
 
         # create record in 'snippets' table.
         snippet_info = json.loads(request.form['info'])
+        reference = md5(bytes(snippet_info['name'], encoding='utf-8')).hexdigest()
         try:
             new_snippet = models.Snippets(
                 name=snippet_info['name'],
                 id=new_snippet_id,
                 public_flag=snippet_info['public_flag'],
-                reference=md5(bytes(snippet_info['name'], encoding='utf-8')).hexdigest(),
+                reference=reference,
                 description=snippet_info['description'],
                 born_date=datetime.now(),
                 preview='default',                          # ADD HERE FIRST 10 ROWS FROM FIRST FILE
@@ -163,8 +165,10 @@ class Upload(Resource):
         if preview_not_created:
             return preview_not_created
 
-        answer = {"message": "Snippet successfully created."}
-        return answer, status.HTTP_201_CREATED
+        answer = {"message": "Snippet successfully created.",
+                "reference": reference}
+        j_answer = json.dumps(answer)
+        return j_answer, status.HTTP_201_CREATED
 
     def data_to_db(self, form_keys, new_snippet_id, public_flag):
         try:
@@ -321,7 +325,7 @@ class Upload(Resource):
     @classmethod
     def detect_language(cls, text):
         lang = Guess().language_name(text)
-        return lang if lang in cls.allowed_langs else 'Other'
+        return lang if lang in cls.allowed_langs else 'Другой'
 
 
 class Test(Resource):
@@ -335,4 +339,3 @@ class Test(Resource):
             ans.append(percent)
         answer = {"message": "request result is {}.".format(ans)}
         return answer
-
