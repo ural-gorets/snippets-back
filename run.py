@@ -5,7 +5,7 @@ from flask_cors import CORS
 
 
 class Config(object):
-    SQLALCHEMY_DATABASE_URI = "postgresql://test_task:qwertyu@localhost:5432/db"    # EDIT THIS!!!!
+    SQLALCHEMY_DATABASE_URI = "postgresql://test_task:qwertyu@localhost:5432/db"
     # basedir = os.path.dirname(__file__)  #migr
     # SQLALCHEMY_MIGRATE_REPO = os.path.join(basedir, 'db_repo') #migr
     SQLALCHEMY_TRACK_MODIFICATIONS = False
