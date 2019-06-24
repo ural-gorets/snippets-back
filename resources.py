@@ -5,6 +5,8 @@ from hashlib import md5
 import requests as req
 
 from flask import request
+import aiohttp
+import asyncio
 from flask_restful import Resource, reqparse
 from flask_api import status
 
@@ -22,7 +24,7 @@ class Wall(Resource):
     def get(self):
         # make request to base for rows number
         rows = db.session.query(models.Snippets.id).filter(models.Snippets.public_flag).count()
-        snipp_on_page = 1    # Snippets number on one page
+        snipp_on_page = 2    # Snippets number on one page
         pages = rows//snipp_on_page + math.ceil(rows/snipp_on_page - rows//snipp_on_page)
 
         # get page number from request
@@ -170,6 +172,33 @@ class Upload(Resource):
         j_answer = json.dumps(answer)
         return j_answer, status.HTTP_201_CREATED
 
+    
+    async def get_reference(self, ref):
+        """
+        Asynchronous URL checking function. Returns fragment's text or error message.
+        """
+        timeout = aiohttp.ClientTimeout(total=30)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.head(ref) as resp:
+                    if resp.status == 200:
+                        if int(resp.headers['Content-Length']) > 1048576:
+                            return {"status": 403, "data": {"message": "Too big data."}, "reference": ref}
+
+                        async with session.get(ref) as response:
+                            if response.status == 200:
+                                return {"status": 200, "data": await response.text(encoding='utf-8'), "reference": ref}
+                            else:
+                                return {"status": response.status, "reference": ref, "data":\
+                                       {"message": "URL not accessible. Status code is {}".format(response.status)}}
+                    else:
+                        return {"status": resp.status, "reference": ref, "data":\
+                               {"message": "URL not accessible. Status code is {}".format(resp.status)}}
+        except Exception as err:
+            return {"status": None, "reference": ref, "data":\
+                   {"message": "No response from the server. {}".format(err)}}
+        
+
     def data_to_db(self, form_keys, new_snippet_id, public_flag):
         try:
             # If files data presents, create record in 'files' table.
@@ -194,7 +223,7 @@ class Upload(Resource):
                     if public_flag:
                         lang_stat_not_updated = self.update_lang_stat(language)
                         if lang_stat_not_updated:
-                            return lang_stat_not_updated
+                            return lang_stat_not_updated     # RAISE ERROR INSTEAD
 
             # If text_form data presents, create record in 'files' table.
             if 'text' in form_keys:
@@ -216,39 +245,55 @@ class Upload(Resource):
                     if public_flag:
                         lang_stat_not_updated = self.update_lang_stat(language)
                         if lang_stat_not_updated:
-                            return lang_stat_not_updated
+                            return lang_stat_not_updated    # RAISE ERROR INSTEAD
 
             # If references data presents, create record in 'files' table.
             if 'refs' in form_keys:
                 refs = json.loads(request.form['refs'])
-                references = refs.keys()
-                for reference in references:
-                    # Get data from file specified in request.form['refs'][i]
-                    file_request = req.get(reference)
-                    if file_request.status_code == 200:
-                        # checks language field and detect if empty.
-                        language = refs[reference] if refs[reference] \
-                            else self.detect_language(file_request.content.decode('utf-8'))
-                        # save data to database
-                        new_file = models.Files(
-                            snippets_id=new_snippet_id,
-                            filename=reference,
-                            type='reference',
-                            lang=language,
-                            data=file_request.content.decode('utf-8'),
-                        )
-                        models.save_to_db(db, new_file, 'add')
-                        if public_flag:
-                            lang_stat_not_updated = self.update_lang_stat(language)
-                            if lang_stat_not_updated:
-                                return lang_stat_not_updated
-                    else:
-                        answer = {"message": "Reference {} incorrect.".format(reference)}
-                        self.cancel_transaction(new_snippet_id)
-                        return answer, status.HTTP_406_NOT_ACCEPTABLE
+                references = list(refs.keys())
+
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                tasks = [self.get_reference(ref) for ref in references]
+                fut = asyncio.gather(*tasks, return_exceptions=True)
+                loop.run_until_complete(fut)
+                
+                fut_result = fut.result()
+                inaccessible = []
+                for answer in fut_result:
+                    if answer["status"] != 200:
+                        inaccessible.append(answer['reference'])
+
+                if inaccessible:
+                    self.cancel_transaction(new_snippet_id)
+                    insertion = ""
+                    for item in inaccessible:
+                        print('item: ', item)
+                        insertion += "{}; ".format(item)
+                    return {"message": "Problems with URL:{}. Transaction cancelled.".format(insertion)}
+
+                for num in range(len(fut_result)):
+                    # checks language field and detect if empty.
+                    language = refs[references[num]] if refs[references[num]] \
+                        else self.detect_language(fut_result[num]["data"])    # file_request.content.decode('utf-8'))
+                    # save data to database
+                    new_file = models.Files(
+                        snippets_id=new_snippet_id,
+                        filename=references[num],
+                        type='reference',
+                        lang=language,
+                        data=fut_result[num]["data"],
+                    )
+                    models.save_to_db(db, new_file, 'add')
+                    if public_flag:
+                        lang_stat_not_updated = self.update_lang_stat(language)
+                        if lang_stat_not_updated:
+                            return lang_stat_not_updated   # RAISE ERROR INSTEAD
+
+                loop.close()
 
         except Exception as err:
-            print('Exception: ', err, '\n#############################')
+            print('Exception in "data_to_db": ', err, '\n#############################')
             answer = {"message": "data saving error: {}".format(err)}
             self.cancel_transaction(new_snippet_id)
             return answer, status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -330,12 +375,22 @@ class Upload(Resource):
 
 class Test(Resource):
     def get(self):
-        # Now testing getting record for some language from LangStat table.
-        ans = []
-        summ = db.session.query(db.func.sum(models.LangStat.fragments_counter)).scalar()
-        LS = db.session.query(models.LangStat).all()
-        for obj in LS:
-            percent = obj.fragments_counter * 100/summ
-            ans.append(percent)
-        answer = {"message": "request result is {}.".format(ans)}
-        return answer
+        # Now testing asyncrinous request for url
+        answer = []
+        form_keys = list(request.form.keys())
+        for key in form_keys:
+            print('Sending request for: ', request.form[key])
+            
+        # files = json.loads(request.form['files'])
+
+
+        # ans = []
+        # summ = db.session.query(db.func.sum(models.LangStat.fragments_counter)).scalar()
+        # LS = db.session.query(models.LangStat).all()
+        # for obj in LS:
+        #     percent = obj.fragments_counter * 100/summ
+        #     ans.append(percent)
+        # answer = {"message": "request result is {}.".format(ans)}
+        
+        j_answer = json.dumps(answer)
+        return j_answer
