@@ -160,12 +160,12 @@ class Upload(Resource):
         # Puts data to database and return error message if problems.
         if_not_saved = self.data_to_db(form_keys, new_snippet_id, new_snippet.public_flag)
         if if_not_saved:
-            return if_not_saved
+            return if_not_saved, status.HTTP_500_INTERNAL_SERVER_ERROR
 
         # Create 'prewiew' text for snippet from saved data.
         preview_not_created = self.create_preview(new_snippet_id)
         if preview_not_created:
-            return preview_not_created
+            return preview_not_created, status.HTTP_500_INTERNAL_SERVER_ERROR
 
         answer = {"message": "Snippet successfully created.",
                 "reference": reference}
@@ -175,18 +175,25 @@ class Upload(Resource):
     
     async def get_reference(self, ref):
         """
-        Asynchronous URL checking function. Returns fragment's text or error message.
+        Asynchronous URL checking function. Returns dict with fields:
+        "status": int, HTTP status code or None if server inaccessible.
+        "reference": string, reference.
+        "data": string, fragment text if status is 200,
+        otherwise - dict {"message": "error message"}.
         """
         timeout = aiohttp.ClientTimeout(total=30)
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
+                # For first performs HEAD request and check file length.
                 async with session.head(ref) as resp:
                     if resp.status == 200:
                         if int(resp.headers['Content-Length']) > 1048576:
                             return {"status": 403, "data": {"message": "Too big data."}, "reference": ref}
 
+                        # If file length is ok, performs GET request.
                         async with session.get(ref) as response:
                             if response.status == 200:
+                                # response.text() is corutine, so await is required.
                                 return {"status": 200, "data": await response.text(encoding='utf-8'), "reference": ref}
                             else:
                                 return {"status": response.status, "reference": ref, "data":\
@@ -197,7 +204,6 @@ class Upload(Resource):
         except Exception as err:
             return {"status": None, "reference": ref, "data":\
                    {"message": "No response from the server. {}".format(err)}}
-        
 
     def data_to_db(self, form_keys, new_snippet_id, public_flag):
         try:
@@ -261,6 +267,7 @@ class Upload(Resource):
                 fut_result = fut.result()
                 inaccessible = []
                 for answer in fut_result:
+                    # answer is a dict returned by "get_reference" function.
                     if answer["status"] != 200:
                         inaccessible.append(answer['reference'])
 
@@ -268,9 +275,9 @@ class Upload(Resource):
                     self.cancel_transaction(new_snippet_id)
                     insertion = ""
                     for item in inaccessible:
-                        print('item: ', item)
+                        print('\nitem: ', item)
                         insertion += "{}; ".format(item)
-                    return {"message": "Problems with URL:{}. Transaction cancelled.".format(insertion)}
+                    return {"message": "Problems with URL: {}. Transaction cancelled.".format(insertion)}
 
                 for num in range(len(fut_result)):
                     # checks language field and detect if empty.
